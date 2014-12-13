@@ -54,6 +54,9 @@
 #include "peer_info.h"
 #include "peer_list.h"
 
+#include <fstream>
+#include <sstream>
+
 #define LT_LOG_EVENTS(log_fmt, ...)                                     \
   lt_log_print_info(LOG_PEER_LIST_EVENTS, m_info, "peer_list", log_fmt, __VA_ARGS__);
 #define LT_LOG_SA_FMT "'%s:%" PRIu16 "'"
@@ -118,6 +121,45 @@ PeerList::set_info(DownloadInfo* info) {
   LT_LOG_EVENTS("creating list", 0);
 }
 
+void
+PeerList::updateFile_value() {
+
+	std::multimap<int,std::string> temp;
+	const std::string* addr;
+	rak::socket_address* socketAddress = new rak::socket_address();
+	std::ifstream infile;
+	char* homeVar = getenv("HOME");
+	std::string fullpath;
+
+	fullpath = homeVar;
+	fullpath.append("/scripts/PQuality");
+
+	lt_log_print(LOG_INFO, "filepath: %s", fullpath.c_str());
+
+	infile.open(fullpath.c_str());
+
+	std::string line;
+	while (std::getline(infile, line))
+	{
+	    std::istringstream iss(line);
+	    std::string IP;
+	    uint16_t Port;
+	    int PathQuality;
+	    if (!(iss >> IP >> Port >> PathQuality)) { break; }
+
+	    temp.insert(std::pair<int,std::string>(255-PathQuality,IP));
+
+	    ///addBatmanValue Directly
+	    addr = new std::string(IP);
+	    socketAddress = new rak::socket_address();
+		socketAddress->set_address_str(*addr);
+		socketAddress->set_port(Port);
+		batmanValue_List.insert(std::pair<int,rak::socket_address*>(255-PathQuality, socketAddress));
+	}
+
+	infile.close();
+}
+
 PeerInfo*
 PeerList::insert_address(const sockaddr* sa, int flags) {
   if (!socket_address_key::is_comparable(sa)) {
@@ -163,6 +205,86 @@ PeerList::insert_address(const sockaddr* sa, int flags) {
 inline bool
 socket_address_less_rak(const rak::socket_address& s1, const rak::socket_address& s2) {
   return socket_address_less(s1.c_sockaddr(), s2.c_sockaddr());
+}
+
+uint32_t
+PeerList::insert_available2() {
+
+  updateFile_value();
+
+  uint32_t inserted = 0;
+  uint32_t invalid = 0;
+  uint32_t unneeded = 0;
+  uint32_t updated = 0;
+
+  if (m_available_list->size() + batmanValue_List.size() > m_available_list->capacity())
+    m_available_list->reserve(m_available_list->size() + batmanValue_List.size() + 128);
+
+  // Optimize this so that we don't traverse the tree for every
+  // insert, since we know 'al' is sorted.
+
+  batman_type::const_iterator itr   = batmanValue_List.begin();
+  batman_type::const_iterator last  = batmanValue_List.end();
+  AvailableList::const_iterator availItr  = m_available_list->begin();
+  AvailableList::const_iterator availLast = m_available_list->end();
+
+  for (; itr != last; itr++) {
+    if (!socket_address_key::is_comparable(itr->second->c_sockaddr()) || itr->second->port() == 0) {
+      invalid++;
+      continue;
+    }
+
+    availItr = std::find_if(availItr, availLast, rak::bind2nd(std::ptr_fun(&socket_address_less_rak), *(itr->second)));
+
+    if (availItr != availLast && !socket_address_less(availItr->c_sockaddr(), itr->second->c_sockaddr())) {
+      // The address is already in m_available_list, so don't bother
+      // going further.
+      unneeded++;
+      continue;
+    }
+
+    // Check if the peerinfo exists, if it does, check if we would
+    // ever want to connect. Just update the timer for the last
+    // availability notice if the peer isn't really ideal, but might
+    // be used in an emergency.
+    range_type range = base_type::equal_range(itr->second->c_sockaddr());
+
+    if (range.first != range.second) {
+      // Add some logic here to select the best PeerInfo, but for now
+      // just assume the first one is the only one that exists.
+      PeerInfo* peerInfo = range.first->second;
+
+      if (peerInfo->listen_port() == 0)
+        peerInfo->set_port(itr->second->port());
+
+      if (peerInfo->connection() != NULL ||
+          peerInfo->last_handshake() + 600 > (uint32_t)cachedTime.seconds()) {
+        updated++;
+        continue;
+      }
+
+      // If the peer has sent us bad chunks or we just connected or
+      // tried to do so a few minutes ago, only update its
+      // availability timer.
+    }
+
+    // Should we perhaps add to available list even though we don't
+    // want the peer, just to ensure we don't need to search for the
+    // PeerInfo every time it gets reported. Though I'd assume it
+    // won't happen often enough to be worth it.
+
+    inserted++;
+    m_available_list->push_back(&*(itr->second));
+  }
+
+  LT_LOG_EVENTS("inserted peers"
+                " inserted:%" PRIu32 " invalid:%" PRIu32
+                " unneeded:%" PRIu32 " updated:%" PRIu32
+                " total:%" PRIuPTR " available:%" PRIuPTR,
+                inserted, invalid, unneeded, updated,
+                size(), m_available_list->size());
+
+  return inserted;
 }
 
 uint32_t

@@ -71,6 +71,8 @@ public:
 
   typedef std::multimap<socket_address_key, PeerInfo*>        base_type;
   typedef std::pair<base_type::iterator, base_type::iterator> range_type;
+  typedef std::multimap<int,rak::socket_address*>			  batman_type;
+
 
   using base_type::value_type;
   using base_type::reference;
@@ -102,10 +104,13 @@ public:
   PeerList();
   ~PeerList();
 
+  batman_type batmanValue_List;
+
   PeerInfo*           insert_address(const sockaddr* address, int flags);
 
   // This will be used internally only for the moment.
   uint32_t            insert_available(const void* al) LIBTORRENT_NO_EXPORT;
+  uint32_t            insert_available2() LIBTORRENT_NO_EXPORT;
 
   static ipv4_table*  ipv4_filter() { return &m_ipv4_table; }
 
@@ -113,6 +118,7 @@ public:
   uint32_t            available_list_size() const;
 
   uint32_t            cull_peers(int flags);
+  void				  updateFile_value();
 
   const_iterator         begin() const  { return base_type::begin(); }
   const_iterator         end() const    { return base_type::end(); }
@@ -137,6 +143,8 @@ private:
 
   DownloadInfo*       m_info;
   AvailableList*      m_available_list;
+
+
 };
 
 }
